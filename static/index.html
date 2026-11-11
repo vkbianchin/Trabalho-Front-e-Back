@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle de equipamentos</title>
+<style>
+:root{--fundo:#eef2f1;--menu:#12332d;--destaque:#0f6b5c;--texto:#1c2a27;--linha:#d5dedb;--erro:#b3261e}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;font:16px/1.5 "Segoe UI",system-ui,sans-serif;background:var(--fundo);color:var(--texto)}
+#tela-login{min-height:100vh;display:grid;place-items:center;padding:16px}
+.cartao{background:#fff;border:1px solid var(--linha);border-radius:10px;padding:20px;margin-bottom:16px}
+#login{width:100%;max-width:380px}
+h1{margin:0 0 16px;font-size:1.5rem}
+label{display:block;font-weight:600;margin-bottom:12px}
+input,select{display:block;width:100%;margin-top:4px;padding:9px 11px;font:inherit;border:1px solid var(--linha);border-radius:6px;background:#fff}
+button{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:6px;padding:10px 16px;background:var(--destaque);color:#fff}
+:focus-visible{outline:3px solid #7fc8b9;outline-offset:1px}
+.dica{background:#eef7f4;border-radius:6px;padding:10px;margin:14px 0 0;font-size:.9rem}
+.erro{color:var(--erro)}.ok{color:var(--destaque)}
+#tela-app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+nav{background:var(--menu);padding:20px 12px;display:flex;flex-direction:column;gap:6px}
+nav h2{color:#fff;font-size:1.1rem;margin:0 8px 14px}
+nav button{background:transparent;text-align:left;color:#cfe3de}
+nav button.ativo{background:#1d4d44;color:#fff}
+#sair{margin-top:auto;color:#ffb4ab}
+section{padding:28px;min-width:0}
+#form{max-width:480px}
+#msg{min-height:1.5em;margin:0 0 12px;font-weight:600}
+.tabela{overflow-x:auto}table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--linha)}
+td .remover{background:transparent;color:var(--erro);padding:2px 8px}
+@media(max-width:700px){#tela-app{grid-template-columns:1fr}nav{flex-direction:row;flex-wrap:wrap}#sair{margin:0}}
+</style>
+</head>
+<body>
+<main id="tela-login">
+  <form id="login" class="cartao">
+    <h1>Controle de equipamentos</h1>
+    <label>Login<input name="login" autocomplete="username" required></label>
+    <label>Senha<input name="senha" type="password" autocomplete="current-password" required></label>
+    <button>Entrar</button>
+    <p id="erro-login" class="erro" role="alert"></p>
+    <p class="dica">Conta de acesso<br>Login: <b>admin</b><br>Senha: <b>admin123</b></p>
+  </form>
+</main>
+
+<div id="tela-app" hidden>
+  <nav>
+    <h2>Equipamentos</h2>
+    <button data-s="categorias">Cadastrar categoria</button>
+    <button data-s="equipamentos">Cadastrar equipamento</button>
+    <button data-s="fornecedores">Cadastrar fornecedor</button>
+    <button id="sair">Sair da conta</button>
+  </nav>
+  <section>
+    <h1 id="titulo"></h1>
+    <form id="form" class="cartao"></form>
+    <p id="msg" role="status"></p>
+    <div class="cartao tabela"><table><thead><tr id="cab"></tr></thead><tbody id="corpo"></tbody></table></div>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, texto = "") => Object.assign(document.createElement(tag), { textContent: texto });
+
+// Cada seção descreve os campos do formulário e as colunas da tabela.
+// Campo com 3º item (ex.: "categorias") vira uma lista de seleção carregada da API.
+const SECOES = {
+  categorias: { nome: "categoria",
+    campos: [["nome", "Nome da categoria"]],
+    colunas: [["nome", "Nome"]] },
+  equipamentos: { nome: "equipamento",
+    campos: [["nome", "Nome do equipamento"], ["patrimonio", "Número de patrimônio"],
+             ["categoria_id", "Categoria", "categorias"], ["fornecedor_id", "Fornecedor", "fornecedores"]],
+    colunas: [["nome", "Nome"], ["patrimonio", "Patrimônio"], ["categoria", "Categoria"], ["fornecedor", "Fornecedor"]] },
+  fornecedores: { nome: "fornecedor",
+    campos: [["nome", "Nome do fornecedor"], ["contato", "Contato (telefone ou e-mail)"]],
+    colunas: [["nome", "Nome"], ["contato", "Contato"]] },
+};
+let token = sessionStorage.getItem("token");
+let atual = "categorias";
+
+// Toda chamada à API passa por aqui: o token vai no cabeçalho Authorization.
+async function api(url, opcoes = {}) {
+  const resposta = await fetch(url, {
+    ...opcoes,
+    headers: { "Content-Type": "application/json", ...(token && { Authorization: "Bearer " + token }) },
+  });
+  if (resposta.status === 401 && token) { sair(); throw new Error("Sessão expirada. Entre novamente."); }
+  const dados = resposta.status === 204 ? null : await resposta.json();
+  if (!resposta.ok) throw new Error(dados.erro || "Erro inesperado.");
+  return dados;
+}
+
+function msg(texto = "", erro = false) {
+  $("#msg").textContent = texto;
+  $("#msg").className = erro ? "erro" : "ok";
+}
+
+function entrar() {
+  $("#tela-login").hidden = true;
+  $("#tela-app").hidden = false;
+  abrir("categorias");
+}
+
+function sair() {
+  token = null;
+  sessionStorage.removeItem("token");
+  $("#tela-app").hidden = true;
+  $("#tela-login").hidden = false;
+  $("#login").reset();
+}
+
+async function abrir(chave) {
+  atual = chave;
+  const s = SECOES[chave];
+  document.querySelectorAll("nav button[data-s]").forEach(b => b.classList.toggle("ativo", b.dataset.s === chave));
+  $("#titulo").textContent = "Cadastrar " + s.nome;
+  const form = $("#form");
+  form.replaceChildren();
+  msg();
+  try {
+    for (const [nome, rotulo, origem] of s.campos) {
+      const label = el("label", rotulo);
+      let campo;
+      if (origem) {
+        campo = document.createElement("select");
+        campo.append(new Option("Selecione", ""));
+        (await api("/api/" + origem)).forEach(o => campo.append(new Option(o.nome, o.id)));
+      } else {
+        campo = document.createElement("input");
+      }
+      campo.name = nome;
+      label.append(campo);
+      form.append(label);
+    }
+    form.append(el("button", "Salvar " + s.nome));
+    await listar();
+  } catch (e) { msg(e.message, true); }
+}
+
+async function listar() {
+  const s = SECOES[atual];
+  const dados = await api("/api/" + atual);
+  $("#cab").replaceChildren(...s.colunas.map(([, titulo]) => el("th", titulo)), el("th"));
+  const linhas = dados.map(item => {
+    const tr = el("tr");
+    s.colunas.forEach(([chave]) => tr.append(el("td", item[chave] ?? "—")));
+    const botao = el("button", "Remover");
+    botao.className = "remover";
+    botao.onclick = async () => {
+      try { await api(`/api/${atual}/${item.id}`, { method: "DELETE" }); msg("Registro removido."); listar(); }
+      catch (e) { msg(e.message, true); }
+    };
+    const td = el("td");
+    td.append(botao);
+    tr.append(td);
+    return tr;
+  });
+  if (!linhas.length) {
+    const td = el("td", "Nada cadastrado ainda.");
+    td.colSpan = s.colunas.length + 1;
+    const tr = el("tr");
+    tr.append(td);
+    linhas.push(tr);
+  }
+  $("#corpo").replaceChildren(...linhas);
+}
+
+$("#login").onsubmit = async e => {
+  e.preventDefault();
+  $("#erro-login").textContent = "";
+  try {
+    const r = await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
+    token = r.token;
+    sessionStorage.setItem("token", token);
+    entrar();
+  } catch (x) { $("#erro-login").textContent = x.message; }
+};
+
+$("#form").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api("/api/" + atual, { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
+    e.target.reset();
+    msg("Cadastrado com sucesso.");
+    listar();
+  } catch (x) { msg(x.message, true); }
+};
+
+document.querySelectorAll("nav button[data-s]").forEach(b => b.onclick = () => abrir(b.dataset.s));
+$("#sair").onclick = sair;
+if (token) entrar();
+</script>
+</body>
+</html>
